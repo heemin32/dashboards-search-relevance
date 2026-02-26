@@ -7,7 +7,7 @@ process.env.TZ = 'UTC';
 
 module.exports = {
   rootDir: '../',
-  setupFiles: ['<rootDir>/test/setupTests.ts'],
+  setupFiles: ['<rootDir>/test/setupTests.ts', '<rootDir>/test/jest.setup.js'],
   setupFilesAfterEnv: ['<rootDir>/test/setup.jest.ts'],
   roots: ['<rootDir>'],
   testMatch: ['**/*.test.js', '**/*.test.jsx', '**/*.test.ts', '**/*.test.tsx'],
