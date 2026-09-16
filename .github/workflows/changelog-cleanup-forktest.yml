@@ -1,0 +1,113 @@
+name: Changelog Cleanup (FORK TEST)
+
+# TEST-ONLY copy of changelog-cleanup.yml for validating the workflow in a
+# personal fork (heemin32/dashboards-search-relevance) WITHOUT touching the
+# upstream opensearch-project repo.
+#
+# Differences from the production workflow:
+#   * Uses the built-in GITHUB_TOKEN (a fork has no OPENSEARCH_CI_BOT_TOKEN),
+#     which has push + pull-request rights within your own fork.
+#   * Drops `push-to-fork` (the PR is opened directly inside this fork).
+#   * Adds workflow_dispatch so it can also be triggered manually.
+#
+# DELETE this file before opening the upstream PR.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - '[0-9]+.[0-9]+'
+      - '[0-9]+.x'
+    paths:
+      - 'release-notes/**'
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup-changelog:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3
+        with:
+          fetch-depth: 0
+
+      - name: Detect added release notes
+        id: detect
+        run: |
+          set -uo pipefail
+          before="${{ github.event.before }}"
+          after="${{ github.sha }}"
+
+          zero="0000000000000000000000000000000000000000"
+
+          if ! git rev-parse --verify --quiet "${after}^{commit}" >/dev/null; then
+            echo "HEAD commit ${after} not found; nothing to do."
+            echo "added=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -n "$before" && "$before" != "$zero" ]] \
+             && git rev-parse --verify --quiet "${before}^{commit}" >/dev/null; then
+            range="${before}..${after}"
+          elif git rev-parse --verify --quiet "${after}^{commit}~1" >/dev/null; then
+            range="${after}~1..${after}"
+          else
+            empty_tree=$(git hash-object -t tree /dev/null)
+            range="${empty_tree}..${after}"
+          fi
+
+          echo "Using diff range: $range"
+          added=$(git diff --name-only --diff-filter=A "$range" -- 'release-notes/**' || true)
+          echo "Added release note files:"
+          echo "$added"
+
+          if [[ -z "$added" ]]; then
+            echo "added=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "added=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Clean up Unreleased section in CHANGELOG.md
+        if: steps.detect.outputs.added == 'true'
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/cleanup_changelog.py CHANGELOG.md
+
+      - name: Check for changes
+        if: steps.detect.outputs.added == 'true'
+        id: diff
+        run: |
+          if git diff --quiet -- CHANGELOG.md; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No changelog changes needed."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Pull Request
+        if: steps.detect.outputs.added == 'true' && steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "Clean up Unreleased section of CHANGELOG after release note added"
+          title: "[AUTO] Clean up CHANGELOG Unreleased section after release"
+          body: |
+            A new release note was added under `release-notes/`, so the entries
+            previously listed in the **Unreleased** section of `CHANGELOG.md`
+            have now shipped.
+
+            This automated PR clears those entries (keeping the section and its
+            category headers) so the Unreleased section is ready for the next
+            release cycle.
+          branch: automated/changelog-cleanup-${{ github.ref_name }}
+          delete-branch: true
+          labels: |
+            skip-changelog
+          add-paths: |
+            CHANGELOG.md
