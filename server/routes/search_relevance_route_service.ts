@@ -28,6 +28,10 @@ const resourceId = schema.string({
   },
 });
 
+// Maximum ratings a single manual-edit request may change; matches the backend's
+// UpdateJudgmentRatingsRequest.MAX_ADJUSTMENTS.
+export const MAX_RATING_ADJUSTMENTS = 1000;
+
 export function registerSearchRelevanceRoutes(router: IRouter, dataSourceEnabled: boolean): void {
   router.post(
     {
@@ -346,6 +350,8 @@ export function registerSearchRelevanceRoutes(router: IRouter, dataSourceEnabled
         params: schema.object({
           id: resourceId,
         }),
+        // Mirrors the backend's authoritative checks: ratings are numbers in [0, 1] (numeric strings
+        // are coerced; NaN/Infinity are rejected) and at most MAX_RATING_ADJUSTMENTS per request.
         body: schema.object({
           judgmentRatings: schema.arrayOf(
             schema.object({
@@ -353,10 +359,20 @@ export function registerSearchRelevanceRoutes(router: IRouter, dataSourceEnabled
               ratings: schema.arrayOf(
                 schema.object({
                   docId: schema.string(),
-                  rating: schema.oneOf([schema.string(), schema.number()]),
-                })
+                  rating: schema.number({ min: 0, max: 1 }),
+                }),
+                { maxSize: MAX_RATING_ADJUSTMENTS }
               ),
-            })
+            }),
+            {
+              maxSize: MAX_RATING_ADJUSTMENTS,
+              validate: (entries) => {
+                const total = entries.reduce((sum, entry) => sum + entry.ratings.length, 0);
+                if (total > MAX_RATING_ADJUSTMENTS) {
+                  return `at most ${MAX_RATING_ADJUSTMENTS} ratings can be updated per request, got ${total}`;
+                }
+              },
+            }
           ),
         }),
         query: queryWithDataSource,

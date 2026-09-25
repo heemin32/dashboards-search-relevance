@@ -5,7 +5,10 @@
 
 import { IRouter } from '../../../../src/core/server';
 import { ServiceEndpoints } from '../../common';
-import { registerSearchRelevanceRoutes } from './search_relevance_route_service';
+import {
+  MAX_RATING_ADJUSTMENTS,
+  registerSearchRelevanceRoutes,
+} from './search_relevance_route_service';
 
 const createMockRouter = () =>
   ({
@@ -107,6 +110,73 @@ describe('registerSearchRelevanceRoutes', () => {
     it.each(idScopedRoutes)('rejects an id with a raw slash for %s %s', (method, path) => {
       const params = getParamsSchema(router, method, path);
       expect(() => params.validate({ id: 'foo/_cluster/settings' })).toThrow();
+    });
+  });
+
+  describe('manual rating update route validation', () => {
+    let bodySchema: any;
+
+    beforeEach(() => {
+      const router = createMockRouter();
+      registerSearchRelevanceRoutes(router, false);
+      const route = (router.put as jest.Mock).mock.calls.find(
+        ([config]) => config.path === `${ServiceEndpoints.Judgments}/{id}`
+      );
+      bodySchema = route[0].validate.body;
+    });
+
+    const withRating = (rating: unknown) => ({
+      judgmentRatings: [{ query: 'q', ratings: [{ docId: '1', rating }] }],
+    });
+
+    it('accepts ratings in [0, 1] as numbers or numeric strings', () => {
+      expect(bodySchema.validate(withRating(0))).toEqual(withRating(0));
+      expect(bodySchema.validate(withRating(1))).toEqual(withRating(1));
+      expect(bodySchema.validate(withRating('0.5'))).toEqual(withRating(0.5));
+    });
+
+    it.each(['banana', -5, 999, 'NaN', 'Infinity', '-Infinity', 1.5, -0.1, '=1+1', ''])(
+      'rejects rating %p',
+      (rating) => {
+        expect(() => bodySchema.validate(withRating(rating))).toThrow();
+      }
+    );
+
+    it('accepts exactly MAX_RATING_ADJUSTMENTS ratings across queries', () => {
+      const half = MAX_RATING_ADJUSTMENTS / 2;
+      const ratings = (n: number) =>
+        Array.from({ length: n }, (_, i) => ({ docId: `${i}`, rating: 0.5 }));
+      expect(() =>
+        bodySchema.validate({
+          judgmentRatings: [
+            { query: 'a', ratings: ratings(half) },
+            { query: 'b', ratings: ratings(half) },
+          ],
+        })
+      ).not.toThrow();
+    });
+
+    it('rejects more than MAX_RATING_ADJUSTMENTS ratings in one query', () => {
+      const ratings = Array.from({ length: MAX_RATING_ADJUSTMENTS + 1 }, (_, i) => ({
+        docId: `${i}`,
+        rating: 0.5,
+      }));
+      expect(() => bodySchema.validate({ judgmentRatings: [{ query: 'q', ratings }] })).toThrow();
+    });
+
+    it('rejects more than MAX_RATING_ADJUSTMENTS ratings spread across queries', () => {
+      const ratings = Array.from({ length: MAX_RATING_ADJUSTMENTS / 2 + 1 }, (_, i) => ({
+        docId: `${i}`,
+        rating: 0.5,
+      }));
+      expect(() =>
+        bodySchema.validate({
+          judgmentRatings: [
+            { query: 'a', ratings },
+            { query: 'b', ratings },
+          ],
+        })
+      ).toThrow(/at most 1000 ratings/);
     });
   });
 });
